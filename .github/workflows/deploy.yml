@@ -1,0 +1,189 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy to Server
+    runs-on: self-hosted
+    env:
+      PROD_DIR: ${{ vars.PROD_DIR || '/home/agicraft/agicraftmc' }}
+      MC_SERVERS: "agents private"
+    if: "github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[deploy]')"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 2  # needed to diff HEAD^ HEAD
+
+      # On Windows: puts Git Bash before WSL in PATH so 'shell: bash' uses Git Bash.
+      # On Linux: this step is skipped.
+      - name: Ensure Git Bash takes priority over WSL
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $gitBash = "C:\Program Files\Git\usr\bin"
+          if (Test-Path $gitBash) {
+            Add-Content $env:GITHUB_PATH $gitBash
+            Write-Host "Added Git Bash to PATH: $gitBash"
+          }
+
+      - name: Detect changed services
+        id: changes
+        shell: bash
+        run: |
+          echo "======================================"
+          echo "Detecting changed services..."
+          echo "======================================"
+
+          # workflow_dispatch = manual trigger, restart everything
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual trigger — restarting all services"
+            echo "restart=all" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          CHANGED=$(git diff HEAD^ HEAD --name-only 2>/dev/null || echo "all")
+          echo "Changed files:"
+          echo "$CHANGED"
+
+          # Full restart if git diff failed or core files changed
+          if [ "$CHANGED" = "all" ] || echo "$CHANGED" | grep -qE "^docker-compose\.yml|^plugins-common/"; then
+            echo "Core files changed — restarting all services"
+            echo "restart=all" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          RESTART=""
+          BUILD=""
+
+          for srv in $MC_SERVERS; do
+            echo "$CHANGED" | grep -q "^$srv/" && RESTART="$RESTART $srv"
+          done
+          echo "$CHANGED" | grep -q "^velocity/"       && RESTART="$RESTART velocity"
+          echo "$CHANGED" | grep -q "^lobby/"          && RESTART="$RESTART lobby"
+          echo "$CHANGED" | grep -q "^limbo/"          && RESTART="$RESTART limbo"
+          echo "$CHANGED" | grep -q "^survival/"       && RESTART="$RESTART survival survivalplus"
+          echo "$CHANGED" | grep -q "^survival_plus/"  && RESTART="$RESTART survivalplus"
+          if echo "$CHANGED" | grep -q "^agicraft_backend/"; then
+            RESTART="$RESTART agicraft_backend"
+            BUILD="$BUILD agicraft_backend"
+          fi
+          if echo "$CHANGED" | grep -q "^agicraft_frontend/"; then
+            RESTART="$RESTART agicraft_frontend"
+            BUILD="$BUILD agicraft_frontend"
+          fi
+          if echo "$CHANGED" | grep -q "^backup/"; then
+            RESTART="$RESTART mc-backup"
+            BUILD="$BUILD mc-backup"
+          fi
+
+          echo "restart=$RESTART" >> $GITHUB_OUTPUT
+          echo "build=$BUILD" >> $GITHUB_OUTPUT
+          echo "Services to restart: '$RESTART'"
+          echo "Services to build:   '$BUILD'"
+
+      - name: Ensure shared networks exist
+        shell: bash
+        run: |
+          docker network inspect minecraft_network >/dev/null 2>&1 || docker network create minecraft_network
+          docker network inspect web_ssl >/dev/null 2>&1 || docker network create web_ssl
+
+      - name: Stop services before sync
+        shell: bash
+        run: |
+          PROD_DIR="${PROD_DIR:-/home/agicraft/agicraftmc}"
+          RESTART="${{ steps.changes.outputs.restart }}"
+          cd "$PROD_DIR" 2>/dev/null || exit 0
+          if [ "$RESTART" = "all" ]; then
+            docker compose stop 2>/dev/null || true
+          elif [ -n "$RESTART" ]; then
+            docker compose stop $RESTART 2>/dev/null || true
+          fi
+
+      - name: Sync files to production
+        shell: bash
+        run: |
+          PROD_DIR="${PROD_DIR:-/home/agicraft/agicraftmc}"
+          echo "======================================"
+          echo "Syncing to: $PROD_DIR"
+          echo "======================================"
+
+          sudo mkdir -p "$PROD_DIR"
+
+          for item in gobetween.toml docker-compose.yml .github \
+                      velocity survival lobby limbo \
+                      agicraft_backend agicraft_frontend survival_plus plugins-common \
+                      backup scripts postgres; do
+            if [ -e "$item" ]; then
+              sudo cp -rf "$item" "$PROD_DIR/"
+              echo "  synced: $item"
+            fi
+          done
+
+          # MC servers: sync config and plugins directly into data
+          for srv in $MC_SERVERS; do
+            if [ -d "$srv/config" ]; then
+              sudo mkdir -p "$PROD_DIR/$srv/data"
+              sudo cp -rf $srv/config/* "$PROD_DIR/$srv/data/"
+              echo "  synced: $srv/config -> $srv/data"
+            fi
+            if [ -d "$srv/plugins" ]; then
+              sudo mkdir -p "$PROD_DIR/$srv/data/plugins"
+              sudo cp -rf $srv/plugins/* "$PROD_DIR/$srv/data/plugins/"
+              echo "  synced: $srv/plugins -> $srv/data/plugins"
+            fi
+          done
+
+      - name: Build services
+        shell: bash
+        run: |
+          PROD_DIR="${PROD_DIR:-/home/agicraft/agicraftmc}"
+          cd "$PROD_DIR"
+
+          BUILD="${{ steps.changes.outputs.build }}"
+          RESTART="${{ steps.changes.outputs.restart }}"
+
+          # Build images for services that need it
+          if [ "$RESTART" = "all" ]; then
+            echo "Building all services..."
+            docker compose build agicraft_frontend agicraft_backend mc-backup
+            docker compose build
+          elif [ -n "$BUILD" ]; then
+            echo "Building:$BUILD"
+            docker compose build $BUILD
+          else
+            echo "No builds needed"
+          fi
+
+      - name: Restart services
+        shell: bash
+        run: |
+          PROD_DIR="${PROD_DIR:-/home/agicraft/agicraftmc}"
+          cd "$PROD_DIR"
+
+          RESTART="${{ steps.changes.outputs.restart }}"
+
+          if [ "$RESTART" = "all" ]; then
+            echo "Full restart..."
+            docker compose up -d --remove-orphans --force-recreate --build
+          elif [ -n "$RESTART" ]; then
+            echo "Restarting:$RESTART"
+            docker compose up -d --remove-orphans --force-recreate --build $RESTART
+          else
+            echo "No services need restart"
+          fi
+
+          echo "======================================"
+          docker compose ps
+          echo "======================================"
+
+      - name: Notify on failure
+        if: failure()
+        shell: bash
+        run: echo "Deployment failed! Check the logs above."

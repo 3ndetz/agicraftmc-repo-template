@@ -1,0 +1,191 @@
+# ==========================================
+# MINECRAFT SERVER DATA (use Docker volumes)
+# ==========================================
+# Exclude runtime server directories, keep only config/ for version control
+survival/*
+!survival/config/
+lobby/*
+!lobby/config/
+agents/*
+!agents/config/
+!velocity/*
+!velocity/config/
+
+# Within config/ directories, the following are also excluded:
+# - *.jar files (plugin binaries)
+# - userdata/, playerdata/ directories
+# - cache/, data/ directories
+# - logs and temporary files
+# (See rules below for details)
+
+# ==========================================
+# MINECRAFT WORLDS & GAME DATA
+# ==========================================
+# Game worlds
+**/world/
+**/world_nether/
+**/world_the_end/
+**/world_ai/
+**/world_ai_nether/
+**/world_ai_the_end/
+**/crash-reports/
+**/stats/
+**/region/
+*.mca
+
+# EULA files
+**/eula.txt
+
+# ==========================================
+# MINECRAFT PLUGIN DATA
+# ==========================================
+# Player data & user databases
+**/plugins/*/userdata/
+**/plugins/*/playerdata/
+**/plugins/Essentials/userdata-npc-backup/
+**/plugins/Essentials/warps/
+**/plugins/TAB/users.yml
+**/plugins/TAB/playerdata.yml
+**/plugins/TAB/skincache.yml
+**/plugins/FancyNpcs/npcs.yml
+**/plugins/AuthMe/playerdata/
+**/plugins/*/cache/
+**/plugins/*/data/
+**/plugins/**/user*
+
+# Paper remapping (temporary build artifacts)
+**/plugins/.paper-remapped/
+**/plugins/.paper-plugins/
+
+# Plugin temporary files
+**/plugins/spark/tmp-client/
+**/plugins/WorldEdit/.archive-unpack/
+**/plugins/*/lang/
+**/plugins/*/*.log
+
+# ==========================================
+# JAVA BUILD ARTIFACTS & LIBRARIES
+# ==========================================
+# JAR files (plugins, server cores, libraries)
+*.jar
+*.zip
+
+# Raw plugins directory (717+ MB, не должно быть в Git!)
+Plugins_raw/
+Plugins Raw/
+
+# Libraries
+**/libraries/
+**/cache/
+**/versions/
+
+# ==========================================
+# DATABASE & AUTHENTICATION
+# ==========================================
+# Sensitive data that should be in .env
+**/.env
+!**/.env.example
+
+# PostgreSQL runtime data (use Docker volumes)
+postgres_data/
+**/data/postgresql/
+
+# ==========================================
+# LOGS & TEMPORARY FILES
+# ==========================================
+# Server logs
+**/logs/
+*.log
+latest.log
+**/plugins/**/*.log
+**/plugins/**/logs/
+
+# Crash reports
+crash-reports/
+
+# Temporary files
+*.tmp
+*.lock
+*.swp
+*.swo
+nul
+
+# ==========================================
+# NODE.JS / FRONTEND & BACKEND
+# ==========================================
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Frontend build artifacts
+dist/
+build/
+out/
+
+# IDE files
+.vscode/
+.idea/
+.DS_Store
+*.suo
+*.sln
+
+# ==========================================
+# WEB SERVER & REVERSE PROXY
+# ==========================================
+# Используется Caddy из web-template репозитория
+# Локальный Caddy удален, проект подключается к web_ssl сети
+
+# ==========================================
+# OS & SYSTEM FILES
+# ==========================================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.env.local
+.env.*.local
+
+# ==========================================
+# BUILD & DEPLOYMENT
+# ==========================================
+.gradle/
+target/
+build/
+dist/
+.parcel-cache/
+
+# ==========================================
+# DOCKER
+# ==========================================
+# Docker volumes (data is persisted in Docker)
+postgres_data/
+velocity_data/
+survival_data/
+lobby_data/
+agents_data/
+
+# ==========================================
+# LOCAL FILES (not for Git)
+# ==========================================
+# Local documentation and scripts
+ROUTER_SETUP.md
+start-with-consoles.bat
+status.bat
+stop-all.bat
+reset-database.bat
+readme_OLD.md
+ГитРекомендации.txt
+Дополнительные идеи.txt
+Инструкции.txt
+AI_RESEARCH_SETUP.md
+LOBBY_SETUP.md
+
+# Backups directory
+backups/
+*.tar.gz
+*.sql
+*.dump
+.env
+**/forwarding.secret
+**/key.pem
+.env.production

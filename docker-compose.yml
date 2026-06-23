@@ -1,0 +1,486 @@
+version: '3.8'
+
+services:
+  ## UTILITY SECTION
+
+  # Web file manager — upload/download/manage JARs, worlds, configs remotely
+  # Access at http://<server-ip>:8090  (default login: admin / admin — change on first login!)
+  # filebrowser:
+
+  # Backup — daily tar.gz snapshots of agents data with rotation
+  # Logs: docker logs mc_backup
+  # Manual run: docker exec mc_backup /usr/local/bin/backup.sh
+  mc-backup:
+    build: ./backup
+    container_name: mc_backup
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Moscow
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=${POSTGRES_DB:-minecraft_server}
+      - POSTGRES_USER=${POSTGRES_USER:-mcserver}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-CHANGE_ME_STRONG_PW}
+    volumes:
+      - ./agents/data:/source:ro     # backup source (read-only)
+      - ./backups:/backups              # backups stored as real folder on disk
+    networks:
+      - mc
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Web file manager — upload/download/manage JARs, worlds, configs remotely
+  # Access at files.example.com  (credentials via FB_USERNAME / FB_PASSWORD in .env)
+  filebrowser:
+    image: filebrowser/filebrowser:latest
+    container_name: mc_filebrowser
+    restart: unless-stopped
+    environment:
+      FB_USERNAME: ${FB_USERNAME:-mcserver}
+      FB_PASSWORD: ${FB_PASSWORD:-CHANGE_ME_STRONG_PW}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        DB=/database/filebrowser.db
+        filebrowser -d $$DB users update "$$FB_USERNAME" --password "$$FB_PASSWORD" 2>/dev/null \
+          || filebrowser -d $$DB users add "$$FB_USERNAME" "$$FB_PASSWORD" --perm.admin 2>/dev/null
+        exec filebrowser -d $$DB
+    volumes:
+      - ./:/srv                          # entire project root accessible
+      - filebrowser_data:/database       # settings & users persist
+    networks:
+      - web_ssl
+
+  ## MANDATORY POSTGRES DATABASE FOR SERVERS
+  postgres:
+    image: postgres:16-alpine
+    container_name: minecraft_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-minecraft_server}
+      POSTGRES_USER: ${POSTGRES_USER:-mcserver}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_STRONG_PW}
+    ports:
+      - "127.0.0.1:5432:5432"  # localhost only (for velocity plugins)
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - mc
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mcserver} -d ${POSTGRES_DB:-minecraft_server}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ## SERVER PROXY SECTION
+  ## CONNECTION BETWEEN SERVERS
+  velocity:
+    build: ./velocity
+    container_name: minecraft_velocity
+    restart: unless-stopped
+    network_mode: host
+    # Ports bound directly on host (no NAT = real player IPs visible):
+    # 25565 TCP/UDP - Minecraft Java
+    # 19132 UDP - Bedrock
+    # 24454 UDP - Voice chat
+    # 25577 UDP - Voice chat proxy
+    volumes:
+      - ./velocity:/server
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+
+## MAIN TARGET SERVER FOR NOW
+  agents:
+    image: itzg/minecraft-server
+    container_name: minecraft_agents
+    restart: unless-stopped
+    environment:
+      TYPE: PAPER
+      VERSION: 1.21.1
+      COPY_PLUGINS_SRC: /plugins-common,/plugins-local
+      
+      # Standart memory settings. DISABLE if using AIKAR setup
+      MAX_MEMORY: 6G
+      MIN_MEMORY: 1G
+      JVM_OPTS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+ParallelRefProcEnabled"
+      
+      # AIKAR SETUP for BIG servers and 10G+ RAM
+      # but will get ALL memory in use and some plugins may have issues
+      # MEMORY: ${AI_RESEARCH_MEMORY:-8G}
+      # USE_AIKAR_FLAGS: "TRUE"
+      
+      EULA: "TRUE"
+      ONLINE_MODE: "FALSE"
+      SERVER_PORT: 25576
+      RCON_PASSWORD: ${RCON_PASSWORD:-CHANGE_ME_STRONG_PW}
+      RCON_PORT: 25586
+      ENABLE_RCON: "TRUE"
+      # Config sync settings
+      SYNC_SKIP_NEWER_IN_DESTINATION: "false"
+      COPY_CONFIG_DEST: /data
+      REPLACE_ENV_DURING_SYNC: "true"
+    ports:
+      # was in expose
+      - "127.0.0.1:25576:25576"  # Server port (localhost only, velocity connects here)
+      - "127.0.0.1:25586:25586"  # RCON port (localhost only)
+      # voice chat port need to be different for different servers because of host forwarding
+      - "127.0.0.1:24454:24454/udp"  # Voice chat (localhost only, velocity proxies it)
+      # was in ports
+      - "25610:25610"             # BlueMap webserver port (public)
+    volumes:
+      - ./agents/data:/data
+      - ./plugins-common:/plugins-common:ro
+    networks:
+      - mc
+      - web_ssl
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: mc-health
+      start_period: 5m
+      interval: 30s
+      retries: 6
+    stdin_open: true
+    tty: true
+
+  private:
+    image: itzg/minecraft-server
+    container_name: minecraft_private
+    restart: unless-stopped
+    environment:
+      TYPE: PAPER
+      VERSION: 1.21.11
+      COPY_PLUGINS_SRC: /plugins-common,/plugins-local
+      
+      # Standart memory settings. DISABLE if using AIKAR setup
+      MAX_MEMORY: 6G
+      MIN_MEMORY: 1G
+      JVM_OPTS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+ParallelRefProcEnabled"
+      
+      # AIKAR SETUP for BIG servers and 10G+ RAM
+      # but will get ALL memory in use and some plugins may have issues
+      # MEMORY: ${AI_RESEARCH_MEMORY:-8G}
+      # USE_AIKAR_FLAGS: "TRUE"
+      
+      EULA: "TRUE"
+      ONLINE_MODE: "FALSE"
+      SERVER_PORT: 25574
+      RCON_PASSWORD: ${RCON_PASSWORD:-CHANGE_ME_STRONG_PW}
+      RCON_PORT: 25584
+      ENABLE_RCON: "TRUE"
+      # Config sync settings
+      SYNC_SKIP_NEWER_IN_DESTINATION: "true"
+      COPY_CONFIG_DEST: /data
+      REPLACE_ENV_DURING_SYNC: "true"
+      # WORLD: /worlds/world
+    ports:
+      - "127.0.0.1:25574:25574"  # Server port (localhost only, velocity connects here)
+      - "127.0.0.1:25584:25584"  # RCON port (localhost only)
+      - "127.0.0.1:24455:24455/udp"  # Voice chat (localhost only, velocity proxies it)
+    volumes:
+      - ./private/data:/data
+      - ./plugins-common:/plugins-common:ro
+    networks:
+      - mc
+      - web_ssl
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: mc-health
+      start_period: 5m
+      interval: 30s
+      retries: 6
+    stdin_open: true
+    tty: true
+
+
+## DISABLED NON-READY SERVERS SECTION
+## TO RUN THEM, START CONTAINERS MANUALLY
+
+  lobby:
+    image: itzg/minecraft-server
+    container_name: minecraft_lobby
+    restart: unless-stopped
+    environment:
+      TYPE: PAPER
+      VERSION: 1.21.1
+      MEMORY: ${LOBBY_MEMORY:-2G}
+      EULA: "TRUE"
+      ONLINE_MODE: "FALSE"
+      SERVER_PORT: 25565
+      USE_AIKAR_FLAGS: "TRUE"
+      # Config sync settings
+      SYNC_SKIP_NEWER_IN_DESTINATION: "false"
+      COPY_CONFIG_DEST: /data
+      REPLACE_ENV_DURING_SYNC: "true"
+    ports:
+      - "127.0.0.1:25575:25565"  # localhost only
+    volumes:
+      - lobby_data:/data                       # Persistent data (JAR, worlds, userdata)
+      - ./lobby/config:/config:ro              # Configs from Git (read-only)
+    networks:
+      - mc
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+    profiles: ["debug"]
+
+  survivalplus:
+    image: itzg/minecraft-server
+    container_name: minecraft_survivalplus
+    restart: unless-stopped
+    environment:
+      TYPE: PAPER
+      VERSION: 1.21.1
+      MEMORY: ${SURVIVALPLUS_MEMORY:-12G}
+      EULA: "TRUE"
+      ONLINE_MODE: "FALSE"
+      SERVER_PORT: 25565
+      USE_AIKAR_FLAGS: "TRUE"
+      # Config sync settings
+      SYNC_SKIP_NEWER_IN_DESTINATION: "false"
+      COPY_CONFIG_DEST: /data
+      REPLACE_ENV_DURING_SYNC: "true"
+    ports:
+      - "127.0.0.1:25573:25565"  # localhost only
+    volumes:
+      - survivalplus_data:/data                # Persistent data (JAR, worlds, userdata)
+      - ./survival_plus/config:/config:ro      # Configs from Git (read-only)
+    networks:
+      - mc
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+    profiles: ["debug"]
+
+
+  limbo:
+    build: ./limbo
+    container_name: minecraft_limbo
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:25578:25578"  # localhost only
+    volumes:
+      - ./limbo:/server
+    networks:
+      - mc
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 100M
+    profiles: ["debug"]
+  survival:
+    image: itzg/minecraft-server
+    container_name: minecraft_survival
+    restart: unless-stopped
+    environment:
+      TYPE: PAPER
+      VERSION: 1.21.1
+      MEMORY: ${SURVIVAL_MEMORY:-10G}
+      EULA: "TRUE"
+      ONLINE_MODE: "FALSE"
+      SERVER_PORT: 25565
+      USE_AIKAR_FLAGS: "TRUE"
+      # Config sync settings
+      SYNC_SKIP_NEWER_IN_DESTINATION: "false"
+      COPY_CONFIG_DEST: /data
+      REPLACE_ENV_DURING_SYNC: "true"
+    ports:
+      - "127.0.0.1:25571:25565"  # localhost only
+    volumes:
+      - survival_data:/data                    # Persistent data (JAR, worlds, userdata)
+      - ./survival/config:/config:ro           # Configs from Git (read-only)
+    networks:
+      - mc
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+    profiles: ["debug"]
+
+## WEBPACK SECTION
+
+  agicraft_backend:
+    build: ./agicraft_backend
+    container_name: agicraft_backend
+    restart: unless-stopped
+    expose:
+      - "3000"  # Internal port (accessible via Caddy)
+    volumes:
+      - ./agicraft_backend/src:/app/src
+    networks:
+      - mc
+      - web_ssl
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-minecraft_server}
+      POSTGRES_USER: ${POSTGRES_USER:-mcserver}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_STRONG_PW}
+      JWT_SECRET: ${JWT_SECRET:-change_this_secret_key}
+      PORT: 3000
+      NODE_ENV: ${NODE_ENV:-production}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
+      YOOKASSA_SHOP_ID: ${YOOKASSA_SHOP_ID}
+      YOOKASSA_SECRET_KEY: ${YOOKASSA_SECRET_KEY}
+      YOOKASSA_RETURN_URL: ${YOOKASSA_RETURN_URL:-http://localhost/payment/success}
+      YOOKASSA_WEBHOOK_URL: ${YOOKASSA_WEBHOOK_URL:-http://localhost/api/payment/webhook}
+      MINECRAFT_HOST: agents
+      MINECRAFT_PORT: 25576
+      MINECRAFT_VERSION: 1.21.1
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  agicraft_frontend:
+    build: ./agicraft_frontend
+    container_name: agicraft_frontend
+    restart: unless-stopped
+    expose:
+      - "80"  # Internal port (accessible via web-template Caddy)
+    networks:
+      - mc
+      - web_ssl
+    depends_on:
+      agicraft_backend:
+        condition: service_healthy
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-/api}
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # CRAFTY CONTROLLER - Web UI для управления серверами
+  # https://hub.docker.com/r/arcadiatechnology/crafty-4
+  # https://wiki.craftycontrol.com/en/4/Docker%20Setup%20Documentation
+  # отключил из-за проблем с windows в crafty docker, говорят юзать portable
+
+  ## CONTROL PANELS SECTION
+  ## ADMIN PANELS AND MONITORING
+  rcon-panel:
+    image: itzg/rcon
+    container_name: rcon_web_admin
+    restart: unless-stopped
+    ports:
+      - "4326:4326"
+      - "4327:4327"
+    environment:
+      RWA_USERNAME: admin
+      RWA_PASSWORD: ${RCON_PASSWORD:-CHANGE_ME_STRONG_PW}
+      RWA_ADMIN: "TRUE"
+      # is referring to the service name 'mc' declared below
+      RWA_RCON_HOST: agents
+      RWA_RCON_PORT: 25586
+      # needs to match the password configured for the container, see RCON_PASSWORD below
+      RWA_RCON_PASSWORD: ${RCON_PASSWORD:-CHANGE_ME_STRONG_PW}
+      # Указываем, что будем управлять несколькими серверами через JSON конфиг
+      RCON_MULTIPLE_SERVERS: "true"
+      # RWA_ENV_CONFIG: "false" 
+    volumes:
+        # нельзя монтировать на /
+    #   # Монтируем файл server.json с настройками серверов
+      - rcon_panel_data:/opt/rcon-web-admin/db
+    networks:
+      - mc
+      - web_ssl
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Control MC docker images
+  portainer:
+      image: portainer/portainer-ce:latest
+      container_name: portainer
+      restart: unless-stopped
+      security_opt:
+        - no-new-privileges:true
+      expose:
+        - "9000"
+      environment:
+        # Задаем часовой пояс переменной, так как монтировать /etc/localtime на Windows нельзя
+        - TZ=Europe/Moscow  # Поменяйте на свой, если нужно
+      volumes:
+        # На Docker Desktop for Windows это работает, так как он транслирует Windows Pipe в Linux Socket
+        - /var/run/docker.sock:/var/run/docker.sock
+        - portainer_data:/data
+      networks:
+        - mc
+        - web_ssl
+
+  # One-shot init: sets portainer admin credentials on first run only (ignored if admin already exists)
+  portainer-init:
+      image: curlimages/curl:latest
+      container_name: portainer_init
+      restart: on-failure
+      environment:
+        ADMIN_USERNAME: ${ADMIN_USERNAME:-mcserver}
+        ADMIN_PASSWORD: ${ADMIN_PASSWORD:-CHANGE_ME_STRONG_PW}
+      command:
+        - sh
+        - -c
+        - |
+          sleep 5 &&
+          curl -sf -X POST http://portainer:9000/api/users/admin/init \
+            -H "Content-Type: application/json" \
+            -d "{\"Username\":\"$$ADMIN_USERNAME\",\"Password\":\"$$ADMIN_PASSWORD\"}" \
+          && echo "Portainer: admin initialized" \
+          || echo "Portainer: admin already exists (OK)"
+      networks:
+        - mc
+        - web_ssl
+      depends_on:
+        - portainer
+
+networks:
+  mc:
+    external: true
+    name: minecraft_network
+  web_ssl:
+    external: true
+    name: web_ssl
+
+volumes:
+  # PostgreSQL data
+  postgres_data:
+    name: mymcmc_postgres_data
+  portainer_data:
+    name: mymcmc_portainer_data
+  rcon_panel_data:
+    name: mymcmc_rcon_panel_data
+  # Minecraft server data volumes (persistent across rebuilds)
+  # velocity_data removed - using custom build with local mount
+  survival_data:
+    name: mymcmc_survival_data
+  lobby_data:
+    name: mymcmc_lobby_data
+  survivalplus_data:
+    name: mymcmc_survivalplus_data
+  filebrowser_data:
+    name: mymcmc_filebrowser_data

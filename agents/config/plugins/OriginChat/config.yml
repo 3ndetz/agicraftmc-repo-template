@@ -1,0 +1,43 @@
+license: ''
+
+# General plugin settings
+settings:
+  # Enable/disable debug messages
+  debug: false
+  # Plugin prefix in messages
+  prefix: '&7[&fOriginChat&7]'
+  # Automatic update checker via Spigot API
+  update-checker:
+    enabled: false
+
+# Locale settings
+locale:
+  # Default language (ru_ru, en_us, uk_ua, de_de)
+  default: ru_ru
+
+# Chat formatting settings
+
+# Module settings
+modules:
+  # Module status (true - enabled, false - disabled)
+  chat: true
+  tab: false
+  name_tags: false
+  private_messages: false
+  roleplay: false
+  server_messages: false
+  locale_advancements: false
+  locale_deaths: false
+  scoreboard: false
+  server_brand: false
+  mentions: false
+  player_info: false
+  emoji: true
+  chat_bubbles: true
+  bed_messages: false
+  afk: false
+  book_formatting: false
+  sign_formatting: false
+  item_formatting: false
+  auto_messages: false
+

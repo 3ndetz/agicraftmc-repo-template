@@ -1,0 +1,16 @@
+server: agents
+auto-install-translations: false
+include-global: true
+use-server-uuid-cache: true
+storage-method: postgresql
+data:
+  address: postgres:5432
+  database: minecraft_server
+  username: mcserver
+  password: "CHANGEME"
+
+# messaging-service: sql
+
+default-assignments:
+  players:
+    - players
